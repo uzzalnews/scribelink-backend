@@ -89,6 +89,54 @@ const GEMINI_MIME_TYPES = {
   ".mp4": "audio/mp4",
 };
 
+async function uploadFileToGemini(filePath, mimeType, key) {
+  const numBytes = fs.statSync(filePath).size;
+  const displayName = path.basename(filePath);
+
+  // Step 1: start a resumable upload session
+  const startRes = await fetch("https://generativelanguage.googleapis.com/upload/v1beta/files", {
+    method: "POST",
+    headers: {
+      "x-goog-api-key": key,
+      "X-Goog-Upload-Protocol": "resumable",
+      "X-Goog-Upload-Command": "start",
+      "X-Goog-Upload-Header-Content-Length": String(numBytes),
+      "X-Goog-Upload-Header-Content-Type": mimeType,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ file: { display_name: displayName } }),
+  });
+  if (!startRes.ok) throw new Error(`Gemini upload (start) failed: ${await startRes.text()}`);
+  const uploadUrl = startRes.headers.get("x-goog-upload-url");
+  if (!uploadUrl) throw new Error("Gemini did not return an upload URL");
+
+  // Step 2: upload the actual bytes
+  const fileBuffer = fs.readFileSync(filePath);
+  const uploadRes = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "Content-Length": String(numBytes),
+      "X-Goog-Upload-Offset": "0",
+      "X-Goog-Upload-Command": "upload, finalize",
+    },
+    body: fileBuffer,
+  });
+  if (!uploadRes.ok) throw new Error(`Gemini upload (bytes) failed: ${await uploadRes.text()}`);
+  const info = await uploadRes.json();
+  let file = info.file;
+
+  // Step 3: wait until the file is ACTIVE (usually instant for audio, but be safe)
+  for (let i = 0; i < 20 && file.state === "PROCESSING"; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const checkRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${file.name}`, {
+      headers: { "x-goog-api-key": key },
+    });
+    file = await checkRes.json();
+  }
+  if (file.state === "FAILED") throw new Error("Gemini file processing failed");
+  return file; // { uri, mimeType, ... }
+}
+
 async function transcribeWithGemini(filePath) {
   const key = (process.env.GEMINI_API_KEY || "").trim();
   if (!key) throw new Error("GEMINI_API_KEY is not set on the server");
@@ -96,14 +144,20 @@ async function transcribeWithGemini(filePath) {
   const model = process.env.GEMINI_MODEL || "gemini-2.0-flash";
   const ext = path.extname(filePath).toLowerCase();
   const mimeType = GEMINI_MIME_TYPES[ext] || "audio/mp3";
+  const numBytes = fs.statSync(filePath).size;
 
-  const audioBytes = fs.readFileSync(filePath);
-  // Gemini's inline_data path supports requests up to ~20MB; larger files
-  // would need the Files API (upload first, then reference by URI).
-  if (audioBytes.length > 19 * 1024 * 1024) {
-    throw new Error("File is too large for inline Gemini transcription (limit ~19MB). Try a shorter clip.");
+  const promptText = "Transcribe this audio in full. Return only the transcript text, no extra commentary.";
+  let audioPart;
+
+  if (numBytes > 19 * 1024 * 1024) {
+    // Large file: upload via the Files API first, then reference by URI
+    const uploadedFile = await uploadFileToGemini(filePath, mimeType, key);
+    audioPart = { file_data: { mime_type: uploadedFile.mimeType || mimeType, file_uri: uploadedFile.uri } };
+  } else {
+    // Small file: send inline as base64
+    const base64Audio = fs.readFileSync(filePath).toString("base64");
+    audioPart = { inline_data: { mime_type: mimeType, data: base64Audio } };
   }
-  const base64Audio = audioBytes.toString("base64");
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -114,14 +168,7 @@ async function transcribeWithGemini(filePath) {
         "x-goog-api-key": key,
       },
       body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              { text: "Transcribe this audio in full. Return only the transcript text, no extra commentary." },
-              { inline_data: { mime_type: mimeType, data: base64Audio } },
-            ],
-          },
-        ],
+        contents: [{ parts: [{ text: promptText }, audioPart] }],
       }),
     }
   );
