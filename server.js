@@ -282,11 +282,13 @@ app.post("/api/transcribe-link", async (req, res) => {
 app.get("/health", (req, res) => res.json({ ok: true, provider: PROVIDER }));
 
 app.get("/api/debug", (req, res) => {
+  const geminiKey = (process.env.GEMINI_API_KEY || "").trim();
   res.json({
     providerResolved: PROVIDER,
     providerRawEnv: JSON.stringify(process.env.TRANSCRIBE_PROVIDER),
     hasOpenAIKey: Boolean((process.env.OPENAI_API_KEY || "").trim()),
-    hasGeminiKey: Boolean((process.env.GEMINI_API_KEY || "").trim()),
+    hasGeminiKey: Boolean(geminiKey),
+    geminiKeyPreview: geminiKey ? `${geminiKey.slice(0, 6)}...${geminiKey.slice(-4)} (length ${geminiKey.length})` : null,
     hasAssemblyAIKey: Boolean((process.env.ASSEMBLYAI_API_KEY || "").trim()),
   });
 });
