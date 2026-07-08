@@ -15,7 +15,7 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const PROVIDER = (process.env.TRANSCRIBE_PROVIDER || "openai").toLowerCase();
+const PROVIDER = (process.env.TRANSCRIBE_PROVIDER || "openai").trim().toLowerCase();
 const TMP_DIR = path.join(os.tmpdir(), "scribelink");
 if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
 
@@ -24,7 +24,7 @@ const upload = multer({ dest: TMP_DIR, limits: { fileSize: 200 * 1024 * 1024 } }
 // ---------- transcription providers ----------
 
 async function transcribeWithOpenAI(filePath) {
-  const key = process.env.OPENAI_API_KEY;
+  const key = (process.env.OPENAI_API_KEY || "").trim();
   if (!key) throw new Error("OPENAI_API_KEY is not set on the server");
 
   const form = new FormData();
@@ -45,7 +45,7 @@ async function transcribeWithOpenAI(filePath) {
 }
 
 async function transcribeWithAssemblyAI(filePath) {
-  const key = process.env.ASSEMBLYAI_API_KEY;
+  const key = (process.env.ASSEMBLYAI_API_KEY || "").trim();
   if (!key) throw new Error("ASSEMBLYAI_API_KEY is not set on the server");
 
   // 1. upload audio
@@ -79,10 +79,66 @@ async function transcribeWithAssemblyAI(filePath) {
   throw new Error("AssemblyAI transcription timed out");
 }
 
+const GEMINI_MIME_TYPES = {
+  ".mp3": "audio/mp3",
+  ".wav": "audio/wav",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".ogg": "audio/ogg",
+  ".flac": "audio/flac",
+  ".mp4": "audio/mp4",
+};
+
+async function transcribeWithGemini(filePath) {
+  const key = (process.env.GEMINI_API_KEY || "").trim();
+  if (!key) throw new Error("GEMINI_API_KEY is not set on the server");
+
+  const model = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeType = GEMINI_MIME_TYPES[ext] || "audio/mp3";
+
+  const audioBytes = fs.readFileSync(filePath);
+  // Gemini's inline_data path supports requests up to ~20MB; larger files
+  // would need the Files API (upload first, then reference by URI).
+  if (audioBytes.length > 19 * 1024 * 1024) {
+    throw new Error("File is too large for inline Gemini transcription (limit ~19MB). Try a shorter clip.");
+  }
+  const base64Audio = audioBytes.toString("base64");
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": key,
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              { text: "Transcribe this audio in full. Return only the transcript text, no extra commentary." },
+              { inline_data: { mime_type: mimeType, data: base64Audio } },
+            ],
+          },
+        ],
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Gemini transcription failed: ${errText}`);
+  }
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
+  return text.trim();
+}
+
 async function transcribeFile(filePath) {
-  return PROVIDER === "assemblyai"
-    ? transcribeWithAssemblyAI(filePath)
-    : transcribeWithOpenAI(filePath);
+  if (PROVIDER === "assemblyai") return transcribeWithAssemblyAI(filePath);
+  if (PROVIDER === "gemini") return transcribeWithGemini(filePath);
+  return transcribeWithOpenAI(filePath);
 }
 
 // ---------- yt-dlp helpers ----------
@@ -177,6 +233,16 @@ app.post("/api/transcribe-link", async (req, res) => {
 });
 
 app.get("/health", (req, res) => res.json({ ok: true, provider: PROVIDER }));
+
+app.get("/api/debug", (req, res) => {
+  res.json({
+    providerResolved: PROVIDER,
+    providerRawEnv: JSON.stringify(process.env.TRANSCRIBE_PROVIDER),
+    hasOpenAIKey: Boolean((process.env.OPENAI_API_KEY || "").trim()),
+    hasGeminiKey: Boolean((process.env.GEMINI_API_KEY || "").trim()),
+    hasAssemblyAIKey: Boolean((process.env.ASSEMBLYAI_API_KEY || "").trim()),
+  });
+});
 
 app.listen(PORT, () => {
   console.log(`ScribeLink backend running on http://localhost:${PORT} (provider: ${PROVIDER})`);
