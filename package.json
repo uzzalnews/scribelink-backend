@@ -1,6 +1,6 @@
 {
   "name": "scribelink-backend",
-  "version": "1.0.0",
+  "version": "1.3.0",
   "description": "Backend server for the ScribeLink Chrome extension. Handles file uploads and link-based transcription via OpenAI Whisper or AssemblyAI.",
   "main": "server.js",
   "type": "commonjs",
