@@ -48,6 +48,8 @@ async function transcribeWithAssemblyAI(filePath) {
   const key = (process.env.ASSEMBLYAI_API_KEY || "").trim();
   if (!key) throw new Error("ASSEMBLYAI_API_KEY is not set on the server");
 
+  const languageCode = (process.env.LANGUAGE_CODE || "").trim(); // e.g. "bn" for Bengali
+
   // 1. upload audio
   const uploadRes = await fetch("https://api.assemblyai.com/v2/upload", {
     method: "POST",
@@ -57,11 +59,15 @@ async function transcribeWithAssemblyAI(filePath) {
   if (!uploadRes.ok) throw new Error("AssemblyAI upload failed");
   const { upload_url } = await uploadRes.json();
 
-  // 2. request transcript
+  // 2. request transcript (use explicit language_code if provided, else auto-detect)
+  const transcriptBody = languageCode
+    ? { audio_url: upload_url, language_code: languageCode, speaker_labels: true }
+    : { audio_url: upload_url, language_detection: true, speaker_labels: true };
+
   const transcriptRes = await fetch("https://api.assemblyai.com/v2/transcript", {
     method: "POST",
     headers: { authorization: key, "content-type": "application/json" },
-    body: JSON.stringify({ audio_url: upload_url }),
+    body: JSON.stringify(transcriptBody),
   });
   if (!transcriptRes.ok) throw new Error("AssemblyAI transcript request failed");
   const { id } = await transcriptRes.json();
@@ -73,7 +79,15 @@ async function transcribeWithAssemblyAI(filePath) {
       headers: { authorization: key },
     });
     const pollData = await pollRes.json();
-    if (pollData.status === "completed") return pollData.text;
+    if (pollData.status === "completed") {
+      // If speaker labels were returned, format as an interview-style transcript
+      if (Array.isArray(pollData.utterances) && pollData.utterances.length > 0) {
+        return pollData.utterances
+          .map((u) => `Speaker ${u.speaker}: ${u.text}`)
+          .join("\n\n");
+      }
+      return pollData.text;
+    }
     if (pollData.status === "error") throw new Error(pollData.error || "AssemblyAI transcription error");
   }
   throw new Error("AssemblyAI transcription timed out");
@@ -146,7 +160,11 @@ async function transcribeWithGemini(filePath) {
   const mimeType = GEMINI_MIME_TYPES[ext] || "audio/mp3";
   const numBytes = fs.statSync(filePath).size;
 
-  const promptText = "Transcribe this audio in full. Return only the transcript text, no extra commentary.";
+  const promptText =
+    "Transcribe this audio verbatim, exactly as spoken. Keep the original spoken language and script " +
+    "(do not translate or transliterate into a different script or language). Do not add commentary, " +
+    "summaries, or explanations. Do not repeat any phrase or sentence more than once. If a section is " +
+    "unclear, write [inaudible] instead of guessing or inventing words. Return only the transcript text.";
   let audioPart;
 
   if (numBytes > 19 * 1024 * 1024) {
@@ -169,6 +187,7 @@ async function transcribeWithGemini(filePath) {
       },
       body: JSON.stringify({
         contents: [{ parts: [{ text: promptText }, audioPart] }],
+        generationConfig: { temperature: 0 },
       }),
     }
   );
