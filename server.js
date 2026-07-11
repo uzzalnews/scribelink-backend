@@ -69,7 +69,7 @@ async function transcribeWithAssemblyAI(filePath) {
   const transcriptBody = {
     audio_url: upload_url,
     speaker_labels: true,
-    speech_model: "universal", // Universal-2 supports code-switching across 99 languages, including Bengali
+    speech_models: ["universal-2"], // supports code-switching across 99 languages, including Bengali
     language_detection: true,
     language_detection_options: {
       code_switching: true,
@@ -314,7 +314,9 @@ app.post("/api/transcribe-link", async (req, res) => {
   }
 });
 
-app.get("/health", (req, res) => res.json({ ok: true, provider: PROVIDER }));
+const BACKEND_VERSION = require("./package.json").version;
+
+app.get("/health", (req, res) => res.json({ ok: true, provider: PROVIDER, version: BACKEND_VERSION }));
 
 app.get("/api/debug", (req, res) => {
   const geminiKey = (process.env.GEMINI_API_KEY || "").trim();
