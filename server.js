@@ -73,7 +73,9 @@ async function transcribeWithAssemblyAI(filePath) {
     language_detection: true,
     language_detection_options: {
       code_switching: true,
-      ...(languageCode ? { expected_languages: [languageCode] } : {}),
+      ...(languageCode
+        ? { expected_languages: [languageCode], fallback_language: languageCode }
+        : {}),
     },
   };
 
