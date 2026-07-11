@@ -56,7 +56,10 @@ async function transcribeWithAssemblyAI(filePath) {
     headers: { authorization: key },
     body: fs.createReadStream(filePath),
   });
-  if (!uploadRes.ok) throw new Error("AssemblyAI upload failed");
+  if (!uploadRes.ok) {
+    const errBody = await uploadRes.text();
+    throw new Error(`AssemblyAI upload failed: ${errBody}`);
+  }
   const { upload_url } = await uploadRes.json();
 
   // 2. request transcript. The audio mixes languages (code-switching), so instead of
@@ -66,6 +69,7 @@ async function transcribeWithAssemblyAI(filePath) {
   const transcriptBody = {
     audio_url: upload_url,
     speaker_labels: true,
+    speech_model: "universal", // Universal-2 supports code-switching across 99 languages, including Bengali
     language_detection: true,
     language_detection_options: {
       code_switching: true,
@@ -78,7 +82,10 @@ async function transcribeWithAssemblyAI(filePath) {
     headers: { authorization: key, "content-type": "application/json" },
     body: JSON.stringify(transcriptBody),
   });
-  if (!transcriptRes.ok) throw new Error("AssemblyAI transcript request failed");
+  if (!transcriptRes.ok) {
+    const errBody = await transcriptRes.text();
+    throw new Error(`AssemblyAI transcript request failed: ${errBody}`);
+  }
   const { id } = await transcriptRes.json();
 
   // 3. poll until done
