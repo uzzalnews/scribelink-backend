@@ -59,10 +59,19 @@ async function transcribeWithAssemblyAI(filePath) {
   if (!uploadRes.ok) throw new Error("AssemblyAI upload failed");
   const { upload_url } = await uploadRes.json();
 
-  // 2. request transcript (use explicit language_code if provided, else auto-detect)
-  const transcriptBody = languageCode
-    ? { audio_url: upload_url, language_code: languageCode, speaker_labels: true }
-    : { audio_url: upload_url, language_detection: true, speaker_labels: true };
+  // 2. request transcript. The audio mixes languages (code-switching), so instead of
+  // forcing a single language (which garbles mixed-language speech), let the model
+  // detect language per-segment. If LANGUAGE_CODE is set, it's used as a hint via
+  // expected_languages rather than a hard lock.
+  const transcriptBody = {
+    audio_url: upload_url,
+    speaker_labels: true,
+    language_detection: true,
+    language_detection_options: {
+      code_switching: true,
+      ...(languageCode ? { expected_languages: [languageCode] } : {}),
+    },
+  };
 
   const transcriptRes = await fetch("https://api.assemblyai.com/v2/transcript", {
     method: "POST",
@@ -305,6 +314,7 @@ app.get("/api/debug", (req, res) => {
   res.json({
     providerResolved: PROVIDER,
     providerRawEnv: JSON.stringify(process.env.TRANSCRIBE_PROVIDER),
+    languageCode: JSON.stringify((process.env.LANGUAGE_CODE || "").trim()),
     hasOpenAIKey: Boolean((process.env.OPENAI_API_KEY || "").trim()),
     hasGeminiKey: Boolean(geminiKey),
     geminiKeyPreview: geminiKey ? `${geminiKey.slice(0, 6)}...${geminiKey.slice(-4)} (length ${geminiKey.length})` : null,
