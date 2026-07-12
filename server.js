@@ -287,33 +287,62 @@ app.get("/api/link-info", async (req, res) => {
   }
 });
 
-app.post("/api/transcribe-file", upload.single("file"), async (req, res) => {
+// ---------- async job store ----------
+// The extension's background script can be suspended by Chrome during a long-running
+// request, silently killing it. To survive that, transcription runs as a background
+// job on the server: the client gets a jobId immediately and polls for status.
+
+const jobs = new Map(); // jobId -> { status: 'running'|'done'|'error', result?, error? }
+const JOB_TTL_MS = 30 * 60 * 1000; // clean up old jobs after 30 minutes
+
+function createJob() {
+  const jobId = crypto.randomBytes(8).toString("hex");
+  jobs.set(jobId, { status: "running" });
+  setTimeout(() => jobs.delete(jobId), JOB_TTL_MS);
+  return jobId;
+}
+
+app.post("/api/transcribe-file", upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-  try {
-    const text = await transcribeFile(req.file.path);
-    res.json({ text });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  } finally {
-    fs.unlink(req.file.path, () => {});
-  }
+  const jobId = createJob();
+  res.json({ jobId }); // respond immediately; actual work continues below
+
+  (async () => {
+    try {
+      const text = await transcribeFile(req.file.path);
+      jobs.set(jobId, { status: "done", result: text });
+    } catch (err) {
+      jobs.set(jobId, { status: "error", error: err.message });
+    } finally {
+      fs.unlink(req.file.path, () => {});
+    }
+  })();
 });
 
-app.post("/api/transcribe-link", async (req, res) => {
+app.post("/api/transcribe-link", (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "Missing url" });
+  const jobId = createJob();
+  res.json({ jobId }); // respond immediately; actual work continues below
 
-  const jobId = crypto.randomBytes(8).toString("hex");
-  let audioPath;
-  try {
-    audioPath = await runYtDlpDownloadAudio(url, jobId);
-    const text = await transcribeFile(audioPath);
-    res.json({ text });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  } finally {
-    if (audioPath && fs.existsSync(audioPath)) fs.unlink(audioPath, () => {});
-  }
+  (async () => {
+    let audioPath;
+    try {
+      audioPath = await runYtDlpDownloadAudio(url, jobId);
+      const text = await transcribeFile(audioPath);
+      jobs.set(jobId, { status: "done", result: text });
+    } catch (err) {
+      jobs.set(jobId, { status: "error", error: err.message });
+    } finally {
+      if (audioPath && fs.existsSync(audioPath)) fs.unlink(audioPath, () => {});
+    }
+  })();
+});
+
+app.get("/api/job-status/:jobId", (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "Job not found (it may have expired)" });
+  res.json(job);
 });
 
 const BACKEND_VERSION = require("./package.json").version;
