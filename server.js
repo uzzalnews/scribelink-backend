@@ -66,18 +66,18 @@ async function transcribeWithAssemblyAI(filePath) {
   // forcing a single language (which garbles mixed-language speech), let the model
   // detect language per-segment. If LANGUAGE_CODE is set, it's used as a hint via
   // expected_languages rather than a hard lock.
-  const transcriptBody = {
-    audio_url: upload_url,
-    speaker_labels: true,
-    speech_models: ["universal-2"], // supports code-switching across 99 languages, including Bengali
-    language_detection: true,
-    language_detection_options: {
-      code_switching: true,
-      ...(languageCode
-        ? { expected_languages: [languageCode], fallback_language: languageCode }
-        : {}),
-    },
-  };
+  // 2. request transcript. Auto-detection + code-switching was misidentifying
+  // Bengali as Hindi for mostly-single-language clips, so when a language code
+  // is explicitly configured, lock to it directly instead of auto-detecting.
+  const transcriptBody = languageCode
+    ? { audio_url: upload_url, language_code: languageCode, speaker_labels: true, speech_models: ["universal-2"] }
+    : {
+        audio_url: upload_url,
+        speaker_labels: true,
+        speech_models: ["universal-2"],
+        language_detection: true,
+        language_detection_options: { code_switching: true },
+      };
 
   const transcriptRes = await fetch("https://api.assemblyai.com/v2/transcript", {
     method: "POST",
